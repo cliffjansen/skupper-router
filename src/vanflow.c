@@ -141,10 +141,11 @@ static const char *co_record_address_prefix    = "vfcr.";
 static const int   heartbeat_interval_sec      = 2;
 static const int   heartbeats_per_beacon       = 5;
 static const int   flush_interval_msec         = 200;
-static const int   initial_flush_interval_msec = 2000;
+static const int   first_flush_delay_ticks     = 10;    // Allow two-second delay until first flush
 static const int   rate_slot_flush_intervals   = 10;    // For a two-second slot interval
 static const int   rate_span                   = 10;    // Ten-second rolling average
 
+static int64_t flush_ticks = 0;
 static sys_atomic_t site_configured;
 
 typedef struct {
@@ -804,9 +805,23 @@ static void _vflow_post_work(vflow_work_t *work)
 {
     sys_mutex_lock(&state->lock);
     DEQ_INSERT_TAIL(state->work_list, work);
-    bool need_signal = state->sleeping;
     sys_mutex_unlock(&state->lock);
+    // wake_vflow_thread() must be called elsewhere for vflow thread to act on new work.
+}
 
+
+/**
+ * @brief Wake vflow thread to process posted work.
+ */
+static void wake_vflow_thread(void)
+{
+    bool need_signal = false;
+    sys_mutex_lock(&state->lock);
+    if (state->sleeping) {
+        need_signal = true;
+        state->sleeping = false;
+    }
+    sys_mutex_unlock(&state->lock);
     if (need_signal) {
         sys_cond_signal(&state->condition);
     }
@@ -1528,8 +1543,15 @@ static void _vflow_tick_TH(vflow_work_t *work, bool discard)
 
 static void _vflow_on_flush(void *context)
 {
-    vflow_work_t *work = _vflow_work(_vflow_tick_TH);
-    _vflow_post_work(work);
+    if (flush_ticks++ >= first_flush_delay_ticks) {
+      vflow_work_t *work = _vflow_work(_vflow_tick_TH);
+      _vflow_post_work(work);
+    }
+    //
+    // Use flush timer as a good proxy for periodic scheduling of the vflow thread.
+    //
+    wake_vflow_thread();
+
     qd_timer_schedule(state->flush_timer, flush_interval_msec);
 }
 
@@ -1677,7 +1699,6 @@ static void *_vflow_thread_TH(void *context)
             //
             state->sleeping = true;
             sys_cond_wait(&state->condition, &state->lock);
-            state->sleeping = false;
         }
         sys_mutex_unlock(&state->lock);
 
@@ -2500,7 +2521,7 @@ static void _vflow_init(qdr_core_t *core, void **adaptor_context)
 
     state->heartbeat_timer = qd_timer(qdr_core_dispatch(core), _vflow_on_heartbeat, 0);
     state->flush_timer  = qd_timer(qdr_core_dispatch(core), _vflow_on_flush, 0);
-    qd_timer_schedule(state->flush_timer, initial_flush_interval_msec);
+    qd_timer_schedule(state->flush_timer, flush_interval_msec);
 
     // allow logging to publish vanflow events now
     qd_log_enable_events();
@@ -2541,6 +2562,7 @@ static void _vflow_final(void *adaptor_context)
     // Signal the thread to exit by posting a NULL work pointer
     //
     _vflow_post_work(_vflow_work(0));
+    wake_vflow_thread();
 
     //
     // Join and free the thread
