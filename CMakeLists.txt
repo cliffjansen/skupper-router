@@ -206,6 +206,8 @@ message(STATUS "Found Proton: ${Proton_LOCATION} (found version \"${Proton_VERSI
 find_package(libnghttp2 1.33.0 REQUIRED)
 # Web Sockets
 find_package(libwebsockets 4.0.1 REQUIRED)
+# io_uring
+find_package(liburing 2.6 REQUIRED)
 
 ##
 ## Optional dependencies

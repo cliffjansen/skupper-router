@@ -56,6 +56,7 @@ set(qpid_dispatch_SOURCES
   decoders/http1/http1_decoder.c
   decoders/http2/http2_decoder.c
   transport_modules/reference.c
+  transport_modules/foo_transport.c
   alloc.c
   alloc_pool.c
   aprintf.c
@@ -161,6 +162,7 @@ set(qpid_dispatch_LIBRARIES
   Proton::core
   Proton::proactor
   Proton::tls
+  PkgConfig::liburing
   ${rt_lib}
   )
 

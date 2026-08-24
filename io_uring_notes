@@ -1,0 +1,118 @@
+This is a basic io_uring prototype.
+
+Goals:
+
+  Throughput performance gains
+  Latency gains
+  Reduced memory footprint via oversubscribed "provided" buffers
+  Aggressive use of MSG_MORE and IORING_CQE_F_SOCK_NONEMPTY
+
+Longer term goals
+
+  QOS possibility with assigned priorities to different work items
+  Drive control plane Proton proactor and Core from io_uring loop.
+  Back-pressure partially guided by local router's IO and CPU load.
+
+Currently only does TCP to TCP on a single router.  No inter-router support yet.
+
+------------------------------------------------------------------------
+
+Benchmarks:
+
+For latency:
+  h2load --warm-up-time 1 --duration 5 --clients 2 --threads 2 http://127.0.0.1:22001/index.txt
+  nghttpd 22002 --address 127.0.0.1 --no-tls --htdocs /r4/amqp/s/conf/http2-server/web/ --workers 2
+
+For throughput:
+  iperf3 --client 127.0.0.1 --port 20001 --parallel 2
+  iperf3 --server --bind 127.0.0.1 --port 20002
+
+The router:
+  skrouterd -c rnew2l.conf
+
+The following numbers are reported for 3 runs
+  iperf3 separate;
+                   h2load separate 
+  iperf3 and h2load run concurrently
+
+No router (memory fabric speed limited)
+  7.3 GB/s ;  74017.40 req/s, 9.11MB/s, 24us
+  7.1 GB/s ;  66465.00 req/s, 8.18MB/s, 27us
+
+Existing router (2 worker threads)
+  1.8 GB/s ;  29952.80 req/s, 3.68MB/s, 63us
+  1.6 GB/s ;  11849.80 req/s, 1.46MB/s, 165us
+
+This prototype (fixed size 4k buffers, 2 worker threads, 2 rings)
+  2.1 GB/s ;  42260.60 req/s, 5.20MB/s, 44us
+  1.7 GB/s ;  36208.60 req/s, 4.45MB/s, 52us
+
+This prototype (mixed buffers 2K & 16k, 2 worker threads, 2 rings)
+  3.6 GB/s ;  41599.20 req/s, 5.12MB/s, 45us
+  2.8 GB/s ;  28173.00 req/s, 3.47MB/s, 68us
+
+------------------------------------------------------------------------
+
+Benchmarks performed on Ryzen 5950X 16 core 32 thread machine.
+
+All TCP connections via loopback.
+All TCP connections between clients, servers, and router cross same slow inter-chiplet memory boundary.
+Processes of same pinned to specific CPUs to guarantee the chiplet crossing.
+
+The benchmark runs are ridiculously short, but the prototype is still
+immature and fragile.  A few longer runs indicate that the numbers are
+reasonable ballpark estimates.
+
+------------------------------------------------------------------------
+# rnew2l.conf
+
+router {
+    mode: interior
+    id: router3
+    workerThreads: 4
+    transportPlugin: fooTransport
+}
+
+# Prevent flow logging affecting performance
+log {
+    module: FLOW_LOG
+    enable: warning+
+}
+
+log {
+    module: DEFAULT
+    enable: info+
+}
+
+# For skstat
+listener {
+    host: 127.0.0.1
+    port: 56722
+    saslMechanisms: ANONYMOUS
+}
+
+tcpListener {
+    address: flood/tcp
+    host: 127.0.0.1
+    port: 20001
+}
+
+# Connect to the workload server iperf3 like
+tcpConnector {
+    address: flood/tcp
+    host: 127.0.0.1
+    port: 20002
+}
+
+tcpListener {
+    address: latency/tcp
+    host: 127.0.0.1
+    port: 22001
+}
+
+# Connect to the workload server iperf3 like
+tcpConnector {
+    address: latency/tcp
+    host: 127.0.0.1
+    port: 22002
+}
